@@ -1,0 +1,10 @@
+{
+    "saveAndRunExt": {
+        "commands": [
+            {
+                "match": "json-server.py",
+                "cmd": "python3 ${file}"
+            }
+        ]
+    }
+}
