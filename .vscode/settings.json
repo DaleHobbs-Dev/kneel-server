@@ -6,5 +6,9 @@
                 "cmd": "python3 ${file}"
             }
         ]
+    },
+    "editor.formatOnSave": true,
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter"
     }
 }

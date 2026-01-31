@@ -3,8 +3,34 @@
 import sqlite3
 import json
 
+from .helpers import build_expanded_query, build_order_object, validate_expand_params
+
+
+def update_order(order_id, order_data):
+    """Function to update an order by its primary key (id)"""
+    with sqlite3.connect("./kneeldiamonds.sqlite3") as conn:
+        db_cursor = conn.cursor()
+
+        db_cursor.execute(
+            """
+            UPDATE Orders
+            SET metalId = ?, sizeId = ?, styleId = ?, customerId = ?
+            WHERE id = ?
+            """,
+            (
+                order_data["metalId"],
+                order_data["sizeId"],
+                order_data["styleId"],
+                order_data["customerId"],
+                order_id,
+            ),
+        )
+
+    return db_cursor.rowcount > 0  # Returns True if a row was updated
+
 
 def retrieve_order(order_url):
+    """Function to retrieve a single order by its primary key (id)"""
     pk = order_url["pk"]
 
     # Open a connection to the database
@@ -14,75 +40,36 @@ def retrieve_order(order_url):
 
         # Write the SQL query to get the information you want
         if "_expand" in order_url["query_params"]:
-            db_cursor.execute(
-                """
-                    SELECT
-                        o.id,
-                        o.metalId,
-                        o.sizeId,
-                        o.styleId,
-                        o.customerId,
-                        c.id customerId,
-                        c.name customerName,
-                        c.email customerEmail,
-                        c.address customerAddress,
-                        m.id metalId,
-                        m.metal metalType,
-                        m.price metalPrice,
-                        s.id sizeId,
-                        s.carets sizeCarets,
-                        s.price sizePrice,
-                        st.id styleId,
-                        st.name styleType,
-                        st.price stylePrice
-                    FROM Orders o
-                    JOIN Customers c
-                        ON c.id = o.customerId
-                    JOIN Metals m
-                        ON m.id = o.metalId
-                    JOIN Sizes s
-                        ON s.id = o.sizeId
-                    JOIN Styles st
-                        ON st.id = o.styleId
-                    WHERE o.id = ?
-                """,
-                (pk,),
-            )
+            # Get the expand parameter list (could be single or multiple)
+            expand_param = order_url["query_params"]["_expand"]
 
+            # Handle if it's a single value or a list
+            # isinstance method checks data type
+            if isinstance(expand_param, list):
+                expand_values = expand_param
+            else:
+                # Could also support comma-separated: "metal,customer"
+                expand_values = (
+                    expand_param.split(",") if "," in expand_param else [expand_param]
+                )
+
+            # Validate all expand values
+            valid_expands = ["metal", "size", "style", "customer"]
+            is_valid, result = validate_expand_params(expand_param, valid_expands)
+            if not is_valid:
+                return json.dumps(result)
+
+            expand_values = result
+
+            # Build the SQL query dynamically based on what's requested
+            query = build_expanded_query(expand_values, "orders", include_where=True)
+
+            db_cursor.execute(query, (pk,))
             row = db_cursor.fetchone()
-            customer = {
-                "id": row["customerId"],
-                "name": row["customerName"],
-                "email": row["customerEmail"],
-                "address": row["customerAddress"],
-            }
-            metal = {
-                "id": row["metalId"],
-                "metal": row["metalType"],
-                "price": row["metalPrice"],
-            }
-            size = {
-                "id": row["sizeId"],
-                "carets": row["sizeCarets"],
-                "price": row["sizePrice"],
-            }
-            style = {
-                "id": row["styleId"],
-                "name": row["styleType"],
-                "price": row["stylePrice"],
-            }
-            order = {
-                "id": row["id"],
-                "metalId": row["metalId"],
-                "sizeId": row["sizeId"],
-                "styleId": row["styleId"],
-                "customerId": row["customerId"],
-                "metal": metal,
-                "size": size,
-                "style": style,
-                "customer": customer,
-            }
 
+            order = build_order_object(row, expand_values)
+
+        # If no expansions requested, retrieve basic order info
         else:
             db_cursor.execute(
                 """
@@ -99,7 +86,7 @@ def retrieve_order(order_url):
             )
             row = db_cursor.fetchone()
 
-            order = dict(row)
+            order = build_order_object(row, [])
 
         # Serialize Python list to JSON encoded string
         serialized_order = json.dumps(order)
@@ -116,58 +103,99 @@ def list_orders(url):
 
         # Write the SQL query to get the information you want
         if "_expand" in url["query_params"]:
-            db_cursor.execute(
-                """
-                    SELECT
-                        s.id,
-                        s.name,
-                        s.hauler_id,
-                        h.id haulerId,
-                        h.name haulerName,
-                        h.dock_id
-                    FROM Ship s
-                    JOIN Hauler h
-                        ON h.id = s.hauler_id
-                """
-            )
+            # Get the expand parameter list (could be single or multiple)
+            expand_param = url["query_params"]["_expand"]
 
+            # Handle if it's a single value or a list
+            if isinstance(expand_param, list):
+                expand_values = expand_param
+            else:
+                expand_values = (
+                    expand_param.split(",") if "," in expand_param else [expand_param]
+                )
+
+            # Validate all expand values
+            valid_expands = ["metal", "size", "style", "customer"]
+            is_valid, result = validate_expand_params(expand_param, valid_expands)
+            if not is_valid:
+                return json.dumps(result)
+
+            # Build the SQL query dynamically based on what's requested
+            query = build_expanded_query(expand_values, "orders")
+
+            db_cursor.execute(query)
             query_results = db_cursor.fetchall()
 
-            # Build ships WITH expanded hauler data
-            ships = []
-            for row in query_results:
-                hauler = {
-                    "id": row["haulerId"],
-                    "name": row["haulerName"],
-                    "dock_id": row["dock_id"],
-                }
-                ship = {
-                    "id": row["id"],
-                    "name": row["name"],
-                    "hauler_id": row["hauler_id"],
-                    "hauler": hauler,
-                }
-                ships.append(ship)
+            # Build orders WITH expanded data
+            orders = [build_order_object(row, expand_values) for row in query_results]
 
         else:
             db_cursor.execute(
                 """
             SELECT
-                s.id,
-                s.name,
-                s.hauler_id
-            FROM Ship s
+                    o.id,
+                    o.metalId,
+                    o.sizeId,
+                    o.styleId,
+                    o.customerId
+            FROM Orders o
             """
             )
 
             query_results = db_cursor.fetchall()
 
-            # Build ships WITHOUT expanded hauler data
-            ships = []
-            for row in query_results:
-                ships.append(dict(row))
+            # Build orders WITHOUT expanded customer data
+            orders = [build_order_object(row, []) for row in query_results]
 
         # Serialize Python list to JSON encoded string
-        serialized_ships = json.dumps(ships)
+        serialized_orders = json.dumps(orders)
 
-    return serialized_ships
+    return serialized_orders
+
+
+def create_order(new_order):
+    """Function to create a new order in the database"""
+    with sqlite3.connect("./kneeldiamonds.sqlite3") as conn:
+        db_cursor = conn.cursor()
+
+        db_cursor.execute(
+            """
+        INSERT INTO Orders
+            (metalId, sizeId, styleId, customerId)
+        VALUES
+            (?, ?, ?, ?);
+        """,
+            (
+                new_order["metalId"],
+                new_order["sizeId"],
+                new_order["styleId"],
+                new_order["customerId"],
+            ),
+        )
+
+        # The lastrowid property on the cursor will return the primary key of
+        # the last thing that got added to the database
+        new_id = db_cursor.lastrowid
+
+        # Add the `id` property to the order dictionary that was sent by the client
+        # So that the client sees the primary key in the response
+        new_order["id"] = new_id
+
+    return json.dumps(new_order)
+
+
+def delete_order(order_id):
+    """Function to delete an order by its primary key (id)"""
+    with sqlite3.connect("./kneeldiamonds.sqlite3") as conn:
+        db_cursor = conn.cursor()
+
+        db_cursor.execute(
+            """
+        DELETE FROM Orders
+        WHERE id = ?
+        """,
+            (order_id,),
+        )
+        number_of_rows_deleted = db_cursor.rowcount
+
+    return True if number_of_rows_deleted > 0 else False
